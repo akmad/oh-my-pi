@@ -1092,6 +1092,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		toolCount: 0,
 		requests: 0,
 		tokens: 0,
+		inputTokens: 0,
+		outputTokens: 0,
 		cost: 0,
 		durationMs: 0,
 		modelOverride: args.modelOverride,
@@ -1690,10 +1692,14 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					if (role === "assistant") {
 						const costRecord = isRecord(messageUsage.cost) ? messageUsage.cost : undefined;
 						hasUsage = true;
-						accumulatedUsage.input += getNumberField(messageUsage, "input") ?? 0;
-						accumulatedUsage.output += getNumberField(messageUsage, "output") ?? 0;
+						const inputTokens = getNumberField(messageUsage, "input") ?? 0;
+						const outputTokens = getNumberField(messageUsage, "output") ?? 0;
+						accumulatedUsage.input += inputTokens;
+						accumulatedUsage.output += outputTokens;
 						accumulatedUsage.cacheRead += getNumberField(messageUsage, "cacheRead") ?? 0;
 						accumulatedUsage.cacheWrite += getNumberField(messageUsage, "cacheWrite") ?? 0;
+						progress.inputTokens = accumulatedUsage.input;
+						progress.outputTokens = accumulatedUsage.output;
 						accumulatedUsage.totalTokens += getNumberField(messageUsage, "totalTokens") ?? 0;
 						accumulatedUsage.reasoningTokens =
 							(accumulatedUsage.reasoningTokens ?? 0) + (getNumberField(messageUsage, "reasoningTokens") ?? 0);

@@ -50,6 +50,14 @@
 
 - The `/review` command's PR-style comparison now uses the merge base against the current branch, excluding commits that exist only on the base branch; selecting the current branch reports no changes.
 - Prompt history is now persisted immediately when submitted, and session database state is checkpointed on exit to improve durability and prevent unbounded WAL growth.
+- Expanded the detached-subagent HUD with each worker's resolved model, cumulative uncached input and output tokens, and a live elapsed-time counter.
+- Standardized completed edit results on hashline-style path and numbered-preview output across edit modes.
+- Made `omp git` stream file contents into an off-thread native differ, paint complete lines immediately, progressively apply syntax highlighting, and defer large commit file statistics until after the first interactive frame.
+- Added `r` shortcut to refresh the git state
+- Added `s`/`u` shortcuts to stage/unstage files directly from the sidebar
+- Made `space` (and `s`/`u`) in the git TUI sidebar stage/unstage whole directories; `enter`/`←`/`→` keep folding the tree
+- Added `space` shortcut as page down in the diff pane
+- Expanded `omp git` keyboard navigation: `alt+↓`/`alt+↑` jump hunks and roll into the adjacent file at the edges, `]`/`[` switch files, `←`/`→` collapse/expand sidebar directories, `enter` opens the selected file, vim motions (`j`/`k`/`h`/`l`/`g`/`G`) work in both panes, `1`–`4` pick a diff view directly, and `c` jumps to the commit form.
 
 ### Fixed
 

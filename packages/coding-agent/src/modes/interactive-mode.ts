@@ -42,6 +42,7 @@ import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilit
 import {
 	$env,
 	adjustHsv,
+	formatDuration as formatMetricDuration,
 	formatNumber,
 	getProjectDir,
 	hsvToRgb,
@@ -161,6 +162,7 @@ import {
 	type VibeParentSession,
 	VibeSessionRegistry,
 } from "../vibe/runtime";
+import { formatResolvedModelBadge } from "./components/agent-hub-renderer";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import { AttachmentChipsBand } from "./components/attachment-chips";
 import type { BashExecutionComponent } from "./components/bash-execution";
@@ -492,12 +494,16 @@ const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
+const SUBAGENT_HUD_TICK_MS = 1000;
+/** One outer indent, a three-column tree connector, and the `: ` before a description. */
+const SUBAGENT_HUD_ROW_CHROME_WIDTH = 6;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of running-agent rows in the same `Id ⟨role⟩: description` shape
- * the inline task rows use (muted task preview when no description was given).
+ * a bounded set of running-agent rows. Each row keeps the task id and role, then
+ * surfaces the resolved model, cumulative uncached input/output tokens, and live
+ * elapsed time before the optional description.
  * Layout mirrors the Todos HUD exactly: unindented header, then
  * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Only detached background spawns are listed: a sync task call blocks the
@@ -505,7 +511,7 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
  * eval `agent()` spawns are rendered by their own eval cell tree.
  * Returns an empty array when nothing is running so the container can clear.
  */
-export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
+export function renderSubagentHudLines(sessions: ObservableSession[], columns: number, nowMs = Date.now()): string[] {
 	const running = sessions.filter(
 		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
 	);
@@ -520,29 +526,58 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 			expanded: true,
 			renderItem: session => {
 				const displayId = formatTaskId(session.id);
-				const role = session.agent ?? session.progress?.agent;
+				const progress = session.progress;
+				const role = session.agent ?? progress?.agent;
 				const badge = agentTypeBadge(role, theme);
 				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
+				let metadata = "";
+				if (progress?.resolvedModel) {
+					metadata += `${theme.sep.dot}${formatResolvedModelBadge(progress.resolvedModel)}`;
+				}
+				if (progress) {
+					const inputTokens =
+						typeof progress.inputTokens === "number" && Number.isFinite(progress.inputTokens)
+							? Math.max(0, progress.inputTokens)
+							: 0;
+					const outputTokens =
+						typeof progress.outputTokens === "number" && Number.isFinite(progress.outputTokens)
+							? Math.max(0, progress.outputTokens)
+							: 0;
+					metadata += `${theme.sep.dot}${theme.fg("dim", `${formatNumber(inputTokens)} uncached in`)}`;
+					metadata += `${theme.sep.dot}${theme.fg("dim", `${formatNumber(outputTokens)} out`)}`;
+				}
+				const reportedDuration =
+					typeof progress?.durationMs === "number" && Number.isFinite(progress.durationMs)
+						? Math.max(0, progress.durationMs)
+						: 0;
+				const observedStart = progress ? session.lastUpdate - reportedDuration : session.lastUpdate;
+				const elapsed = Math.max(reportedDuration, nowMs - observedStart, 0);
+				metadata += `${theme.sep.dot}${theme.fg("dim", formatMetricDuration(elapsed))}`;
+
+				const description = session.description?.trim() || progress?.description?.trim();
 				const distinctDescription =
 					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				if (distinctDescription) {
-					const budget = Math.max(
-						TRUNCATE_LENGTHS.SHORT,
-						columns - visibleWidth(displayId) - visibleWidth(Bun.stripANSI(badge)) - 10,
-					);
+				const budget = Math.max(
+					0,
+					columns -
+						visibleWidth(Bun.stripANSI(line)) -
+						visibleWidth(Bun.stripANSI(metadata)) -
+						SUBAGENT_HUD_ROW_CHROME_WIDTH,
+				);
+				if (distinctDescription && budget > 0) {
 					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
 					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-				} else {
+				} else if (!distinctDescription) {
 					// No spawn description: fall back to a muted task preview, same as
 					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
+					const taskPreview = progress?.task?.trim();
+					if (taskPreview && !labelEchoesHandle(session.id, taskPreview) && budget > 0) {
 						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						line += ` ${theme.fg("muted", truncateToWidth(formatted, TRUNCATE_LENGTHS.SHORT))}`;
+						line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
 					}
 				}
-				return line;
+				line += metadata;
+				return truncateToWidth(line, Math.max(1, columns - (SUBAGENT_HUD_ROW_CHROME_WIDTH - 2)));
 			},
 		},
 		theme,
@@ -832,6 +867,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#subagentEventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
+	#subagentHudTickTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
@@ -2538,6 +2574,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 		this.#renderSubagentList();
+		this.#syncSubagentHudTickTimer();
 		this.ui.requestRender();
 	}
 
@@ -2547,6 +2584,30 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerUiSyncTimer = undefined;
 		}
 		this.#observerUiSyncNeedsTodoReconcile = false;
+	}
+
+	#syncSubagentHudTickTimer(): void {
+		const hasRunningDetachedSubagent = this.#observerRegistry
+			.getSessions()
+			.some(session => session.kind === "subagent" && session.status === "active" && session.detached === true);
+		if (!hasRunningDetachedSubagent) {
+			this.#cancelSubagentHudTickTimer();
+			return;
+		}
+		if (this.#subagentHudTickTimer) return;
+		this.#subagentHudTickTimer = setTimeout(() => {
+			this.#subagentHudTickTimer = undefined;
+			this.#renderSubagentList();
+			this.ui.requestRender();
+			this.#syncSubagentHudTickTimer();
+		}, SUBAGENT_HUD_TICK_MS);
+		this.#subagentHudTickTimer.unref?.();
+	}
+
+	#cancelSubagentHudTickTimer(): void {
+		if (!this.#subagentHudTickTimer) return;
+		clearTimeout(this.#subagentHudTickTimer);
+		this.#subagentHudTickTimer = undefined;
 	}
 
 	#renderTodoList(): void {
@@ -4693,6 +4754,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
+		this.#cancelSubagentHudTickTimer();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
 			this.#sttController.dispose();

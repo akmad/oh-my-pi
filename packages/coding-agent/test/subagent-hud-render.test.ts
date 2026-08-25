@@ -88,8 +88,8 @@ function makeProgressPayload(
 	};
 }
 
-function render(sessions: ObservableSession[], columns = 120): string {
-	return Bun.stripANSI(renderSubagentHudLines(sessions, columns).join("\n"));
+function render(sessions: ObservableSession[], columns = 120, nowMs = Date.now()): string {
+	return Bun.stripANSI(renderSubagentHudLines(sessions, columns, nowMs).join("\n"));
 }
 
 describe("subagent HUD lines", () => {
@@ -105,6 +105,40 @@ describe("subagent HUD lines", () => {
 		expect(out).toContain("Subagents");
 		expect(out).toContain("AuthLoader: Refactoring the auth flow");
 		expect(out).toContain("SchemaMigrator: Migrating the users table");
+	});
+
+	it("shows the resolved model, uncached input, output, and live elapsed time", () => {
+		const nowMs = Date.parse("2026-08-25T12:00:00Z");
+		const out = render(
+			[
+				makeSession({
+					id: "Compiler",
+					agent: "sonic",
+					description: "Build the release binary",
+					lastUpdate: nowMs,
+					progress: makeProgress({
+						id: "Compiler",
+						agent: "sonic",
+						resolvedModel: "openai-codex/gpt-5.6-sol:high",
+						inputTokens: 12_300,
+						outputTokens: 742,
+						durationMs: 65_000,
+					}),
+				}),
+			],
+			120,
+			nowMs + 5_000,
+		);
+
+		expect(out).toContain("Compiler");
+		expect(out).toContain("gpt-5.6-sol");
+		expect(out).toContain("12K uncached in");
+		expect(out).toContain("742 out");
+		expect(out).toContain("1m10s");
+		expect(out).toContain("Build the release binary");
+		for (const line of out.split("\n")) {
+			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(120);
+		}
 	});
 
 	it("shows a non-default role badge and hides descriptions that only echo the id", () => {
@@ -384,7 +418,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		}
 
 		await Promise.resolve();
-		vi.runAllTimers();
+		vi.advanceTimersByTime(100);
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
@@ -392,5 +426,23 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hud).toContain("BurstAgent5: Burst job 5");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("refreshes elapsed time while a detached subagent remains active", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("LongRunner", 0, "Wait for work", true));
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		await Promise.resolve();
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("100ms");
+
+		vi.advanceTimersByTime(1000);
+		await Promise.resolve();
+		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(hud).toContain("1.1s");
+		expect(requestRender).toHaveBeenCalledTimes(2);
 	});
 });

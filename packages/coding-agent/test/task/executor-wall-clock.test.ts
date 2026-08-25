@@ -7,7 +7,7 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentDefinition, AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
 /**
@@ -735,10 +735,14 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		};
 		mockCreateAgentSession(fastSession as AgentSession);
 
+		let latestProgress: AgentProgress | undefined;
 		const result = await runSubprocess({
 			...baseOptions,
 			id: "subagent-context-tokens",
 			settings,
+			onProgress: progress => {
+				latestProgress = progress;
+			},
 		});
 
 		expect(result.aborted).toBe(false);
@@ -747,6 +751,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		// here we mock createAgentSession so it stays undefined. The async-task
 		// consumer's assignment is a straight copy, so undefined is acceptable.
 		expect(result.contextWindow).toBeUndefined();
+		expect(latestProgress).toMatchObject({ inputTokens: 100, outputTokens: 50 });
 	});
 
 	it("attributes a budget hard-abort to the budget, not a timer that fires during teardown", async () => {
