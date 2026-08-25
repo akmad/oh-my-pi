@@ -44,6 +44,7 @@ import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilit
 import {
 	$env,
 	adjustHsv,
+	formatDuration as formatMetricDuration,
 	formatNumber,
 	getProjectDir,
 	hsvToRgb,
@@ -174,6 +175,7 @@ import {
 	type VibeParentSession,
 	VibeSessionRegistry,
 } from "../vibe/runtime";
+import { formatResolvedModelBadge } from "./components/agent-hub-renderer";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import { AttachmentChipsBand } from "./components/attachment-chips";
 import type { BashExecutionComponent } from "./components/bash-execution";
@@ -495,9 +497,54 @@ const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
  *  before it auto-clears, mirroring the todo HUD's auto-clear timer. */
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
-/** Active subagent sessions the anchored HUD jump-lists, sync or detached. Slots follow registry order. */
+/**
+ * Active subagent sessions the anchored HUD jump-lists. Slots follow registry order.
+ *
+ * DETACHED SPAWNS ONLY, which narrows upstream's predicate deliberately. A sync task
+ * call blocks the parent turn and its inline tool block already renders progress live,
+ * and eval `agent()` spawns are rendered by their own eval cell tree — listing either
+ * here paints the same work twice.
+ *
+ * Both readers go through this one predicate: `renderSubagentHudLines` for the rows and
+ * `#renderSubagentList` for the click `order` it hands `SubagentHudComponent`. Narrowing
+ * it in two places instead of one is how the rendered rows and the click map come to
+ * disagree about which agent row 3 is.
+ */
 function isHudSubagent(session: ObservableSession): boolean {
-	return session.kind === "subagent" && session.status === "active";
+	return session.kind === "subagent" && session.status === "active" && session.detached === true;
+}
+
+/**
+ * One glyph standing in for a subagent's role, so a row is identifiable before any of
+ * its text is read. Upstream renders the role as a text badge instead; leading with the
+ * icon spends the reclaimed width on the description.
+ *
+ * Unknown and missing roles both fall back to the generic agents glyph rather than
+ * rendering nothing: a blank where every other row has an icon reads as a broken row,
+ * not as an unrecognised role. The `||` fallbacks cover themes that define no dedicated
+ * symbol for those two commands.
+ */
+function subagentRoleIcon(role: string | undefined): string {
+	const fallback = theme.symbol("icon.agents");
+	const icon = (() => {
+		switch (role?.trim().toLowerCase()) {
+			case "scout":
+				return theme.symbol("icon.search");
+			case "sonic":
+				return theme.symbol("icon.fast");
+			case "librarian":
+				return theme.symbol("icon.extensionInstruction");
+			case "reviewer":
+				return theme.symbol("icon.advisor");
+			case "security-reviewer":
+				return theme.symbol("cmd.shield") || theme.symbol("icon.extensionRule");
+			case "designer":
+				return theme.symbol("cmd.pencil") || theme.symbol("icon.extensionPrompt");
+			default:
+				return fallback;
+		}
+	})();
+	return theme.fg("accent", icon);
 }
 
 /**
@@ -561,6 +608,21 @@ export class SubagentHudComponent implements Component {
 	}
 }
 
+/**
+ * How often a HUD row's elapsed time is repainted while its agent stays active.
+ *
+ * The row shows live elapsed, so it has to repaint on a clock rather than only on a
+ * progress event — a subagent that goes quiet for a minute would otherwise show a
+ * frozen duration that reads as a hung agent.
+ */
+const SUBAGENT_HUD_TICK_MS = 1000;
+
+/**
+ * Horizontal padding SubagentHudComponent's `Text` mount reserves, which a row that pads
+ * itself to full width has to subtract or it wraps. Derived from the same `getPaddingX(1)`
+ * the hit map measures with, so the two cannot drift apart.
+ */
+const SUBAGENT_HUD_TEXT_PADDING = getPaddingX(1) * 2;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
 /** Item rows a collapsed jump list shows before the expander. */
@@ -593,16 +655,26 @@ export function layoutPinnedHud(runningTotal: number, expanded: boolean): Pinned
 }
 
 /**
- * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of running-agent rows in the same `Id ⟨role⟩: description` shape
- * the inline task rows use (muted task preview when no description was given).
- * Layout mirrors the Todos HUD exactly: unindented header, then
- * `renderTreeList` rows (dim connectors) shifted right by one space.
- * Every active subagent is listed — detached background spawns and sync task
- * calls alike — so the pinned block doubles as a click jump list.
+ * Build the anchored subagent HUD block: a bold accent "Subagents" header plus a
+ * bounded set of running-agent rows. Each row leads with a semantic role icon, keeps
+ * its description and resolved model on the left, and pins cumulative uncached
+ * input/output tokens plus live elapsed time to the right edge.
+ * Layout mirrors the Todos HUD exactly: unindented header, then `renderTreeList` rows
+ * (dim connectors) shifted right by one space, then the expand/collapse row.
+ * Only detached background spawns are listed — see `isHudSubagent` — and the block
+ * doubles as a click jump list over exactly those.
  * Returns an empty array when nothing is running so the container can clear.
+ *
+ * `nowMs` is injected rather than read inside, so a test can drive elapsed time with
+ * fake timers instead of sleeping. It follows `expanded` because callers that only
+ * want the expansion state should not have to pass a clock.
  */
-export function renderSubagentHudLines(sessions: ObservableSession[], columns: number, expanded = false): string[] {
+export function renderSubagentHudLines(
+	sessions: ObservableSession[],
+	columns: number,
+	expanded = false,
+	nowMs = Date.now(),
+): string[] {
 	const running = sessions.filter(isHudSubagent);
 	if (running.length === 0) return [];
 	const layout = layoutPinnedHud(running.length, expanded);
@@ -615,48 +687,85 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 			items,
 			expanded: true,
 			renderItem: (session, context) => {
-				const rowWidth = Math.max(0, columns - visibleWidth(outerIndent) - (context.prefixWidth ?? 0));
-				const role = session.agent ?? session.progress?.agent;
-				const displayId = truncateToWidth(
-					formatTaskId(session.id),
-					Math.max(0, rowWidth - visibleWidth(`${dot} `)),
+				// Upstream measures the row from the tree connector it actually drew. The
+				// fork used to derive this from a fixed chrome constant, which silently
+				// went wrong whenever the connector changed; `prefixWidth` is the real
+				// number and it is what keeps the right column flush with the edge.
+				//
+				// SUBAGENT_HUD_TEXT_PADDING is subtracted too, and it is not cosmetic. These
+				// rows are PADDED to their full width to right-align the metrics, unlike
+				// upstream's, which merely truncate and usually end early. SubagentHudComponent
+				// mounts them in a Text that reserves the same padding, so a row measured
+				// against the bare terminal width is two columns too wide and every single
+				// one wraps — each HUD entry silently becoming two rows, the second nearly
+				// blank. Upstream never saw this because a row that stops short cannot wrap.
+				const rowWidth = Math.max(
+					0,
+					columns - SUBAGENT_HUD_TEXT_PADDING - visibleWidth(outerIndent) - (context.prefixWidth ?? 0),
 				);
-				const badge = truncateToWidth(
-					agentTypeBadge(role, theme),
-					Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}`)),
-				);
-				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}`));
-				const modelBadge = showModelBadge
-					? formatFeedModelBadge(
-							session.progress?.resolvedModelIdentity ?? session.progress?.resolvedModel,
-							session.progress?.resolvedThinkingLevel,
-							session.progress?.advisor,
-							theme,
-							Math.min(FEED_MODEL_BADGE_WIDTH, Math.max(0, titleBudget - 1)),
-						)
-					: "";
-				const modelLead = modelBadge ? `${modelBadge} ` : "";
-				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
+				const progress = session.progress;
+				const role = session.agent ?? progress?.agent;
+				const icon = subagentRoleIcon(role);
+				const leftBase = `${dot} ${icon}`;
+				const description = session.description?.trim() || progress?.description?.trim();
 				const distinctDescription =
 					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				if (distinctDescription) {
-					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
-					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-					if (budget > 0) {
-						line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-					}
-				} else {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						const budget = Math.min(TRUNCATE_LENGTHS.SHORT, Math.max(0, rowWidth - visibleWidth(line) - 1));
-						if (budget > 0) line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
-					}
+				const taskPreview = progress?.task?.trim();
+				const displayText =
+					distinctDescription ??
+					(taskPreview && !labelEchoesHandle(session.id, taskPreview) ? taskPreview : formatTaskId(session.id));
+				let left = leftBase;
+				const formatted = replaceTabs(sanitizeText(displayText)).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+				left += ` ${theme.fg(distinctDescription ? "accent" : "muted", formatted)}`;
+				if (progress?.resolvedModel) {
+					left += `${theme.sep.dot}${formatResolvedModelBadge(progress.resolvedModel)}`;
 				}
-				return truncateToWidth(line, rowWidth, "");
+
+				const rightParts: string[] = [];
+				if (progress) {
+					const inputTokens =
+						typeof progress.inputTokens === "number" && Number.isFinite(progress.inputTokens)
+							? Math.max(0, progress.inputTokens)
+							: 0;
+					const outputTokens =
+						typeof progress.outputTokens === "number" && Number.isFinite(progress.outputTokens)
+							? Math.max(0, progress.outputTokens)
+							: 0;
+					rightParts.push(
+						theme.fg("dim", `${formatNumber(inputTokens)} tot`),
+						theme.fg("dim", `${formatNumber(outputTokens)} out`),
+					);
+				}
+				// Elapsed takes the larger of what progress reported and what the wall
+				// clock says, because durationMs stops moving the moment an agent goes
+				// quiet while the agent is still running. A frozen duration is exactly
+				// what a hung agent looks like, so this must never be the reported value
+				// alone.
+				const reportedDuration =
+					typeof progress?.durationMs === "number" && Number.isFinite(progress.durationMs)
+						? Math.max(0, progress.durationMs)
+						: 0;
+				const observedStart = progress ? session.lastUpdate - reportedDuration : session.lastUpdate;
+				const elapsed = Math.max(reportedDuration, nowMs - observedStart, 0);
+				rightParts.push(theme.fg("dim", formatMetricDuration(elapsed)));
+
+				// Shed metrics from the left until the right column fits beside the icon.
+				// Elapsed is pushed last and therefore shed last: of the three it is the
+				// one that says whether the agent is moving at all.
+				while (
+					rightParts.length > 1 &&
+					visibleWidth(Bun.stripANSI(rightParts.join(theme.sep.dot))) + visibleWidth(Bun.stripANSI(leftBase)) + 1 >
+						rowWidth
+				) {
+					rightParts.shift();
+				}
+				const right = rightParts.join(theme.sep.dot);
+				const rightWidth = visibleWidth(Bun.stripANSI(right));
+				if (rightWidth >= rowWidth) return truncateToWidth(right, rowWidth);
+				const leftBudget = Math.max(0, rowWidth - rightWidth - 1);
+				const fittedLeft = truncateToWidth(left, leftBudget);
+				const padding = Math.max(1, rowWidth - visibleWidth(Bun.stripANSI(fittedLeft)) - rightWidth);
+				return `${fittedLeft}${" ".repeat(padding)}${right}`;
 			},
 		},
 		theme,
@@ -1036,6 +1145,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#subagentEventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
+	#subagentHudTickTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
@@ -2932,6 +3042,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 		this.#renderSubagentList();
+		this.#syncSubagentHudTickTimer();
 		this.ui.requestRender();
 	}
 
@@ -2941,6 +3052,30 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerUiSyncTimer = undefined;
 		}
 		this.#observerUiSyncNeedsTodoReconcile = false;
+	}
+
+	#syncSubagentHudTickTimer(): void {
+		const hasRunningDetachedSubagent = this.#observerRegistry
+			.getSessions()
+			.some(session => session.kind === "subagent" && session.status === "active" && session.detached === true);
+		if (!hasRunningDetachedSubagent) {
+			this.#cancelSubagentHudTickTimer();
+			return;
+		}
+		if (this.#subagentHudTickTimer) return;
+		this.#subagentHudTickTimer = setTimeout(() => {
+			this.#subagentHudTickTimer = undefined;
+			this.#renderSubagentList();
+			this.ui.requestRender();
+			this.#syncSubagentHudTickTimer();
+		}, SUBAGENT_HUD_TICK_MS);
+		this.#subagentHudTickTimer.unref?.();
+	}
+
+	#cancelSubagentHudTickTimer(): void {
+		if (!this.#subagentHudTickTimer) return;
+		clearTimeout(this.#subagentHudTickTimer);
+		this.#subagentHudTickTimer = undefined;
 	}
 
 	#renderTodoList(): void {
@@ -5283,6 +5418,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
+		this.#cancelSubagentHudTickTimer();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
 			this.#sttController.dispose();

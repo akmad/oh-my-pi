@@ -267,6 +267,8 @@ export interface AgentProgress {
 	toolCount: number;
 	requests: number;
 	tokens: number;
+	inputTokens?: number;
+	outputTokens?: number;
 	contextTokens?: number;
 	contextWindow?: number;
 	cost: number;

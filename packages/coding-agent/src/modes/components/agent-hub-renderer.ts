@@ -81,7 +81,11 @@ export function formatRoleBadge(role: string, settings: Settings): string {
 }
 
 /** Format a resolved selector, preserving provider identity when requested. */
-function formatResolvedModelBadge(resolved: string, preserveProvider = false, fallbackLevel?: ThinkingLevel): string {
+export function formatResolvedModelBadge(
+	resolved: string,
+	preserveProvider = false,
+	fallbackLevel?: ThinkingLevel,
+): string {
 	const cleanResolved = sanitizeDisplayText(resolved);
 	// Model ids may themselves contain colons (`qwen3:14b`), so only treat the
 	// suffix as a thinking level when it parses as one.
