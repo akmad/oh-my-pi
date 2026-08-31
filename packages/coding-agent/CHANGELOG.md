@@ -50,7 +50,7 @@
 
 - The `/review` command's PR-style comparison now uses the merge base against the current branch, excluding commits that exist only on the base branch; selecting the current branch reports no changes.
 - Prompt history is now persisted immediately when submitted, and session database state is checkpointed on exit to improve durability and prevent unbounded WAL growth.
-- Expanded the detached-subagent HUD with each worker's resolved model, cumulative uncached input and output tokens, and a live elapsed-time counter.
+- Expanded the detached-subagent HUD with icon-led task descriptions and resolved models, plus right-aligned cumulative uncached input/output tokens and live elapsed time.
 - Standardized completed edit results on hashline-style path and numbered-preview output across edit modes.
 - Made `omp git` stream file contents into an off-thread native differ, paint complete lines immediately, progressively apply syntax highlighting, and defer large commit file statistics until after the first interactive frame.
 - Added `r` shortcut to refresh the git state

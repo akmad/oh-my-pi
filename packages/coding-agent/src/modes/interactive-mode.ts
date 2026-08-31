@@ -124,7 +124,7 @@ import { STTController, type SttState } from "../stt";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
-import { agentTypeBadge, formatTaskId } from "../task/render";
+import { formatTaskId } from "../task/render";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
 import type { LspStartupServerInfo } from "../tools";
@@ -495,15 +495,36 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
 const SUBAGENT_HUD_TICK_MS = 1000;
-/** One outer indent, a three-column tree connector, and the `: ` before a description. */
-const SUBAGENT_HUD_ROW_CHROME_WIDTH = 6;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
+
+function subagentRoleIcon(role: string | undefined): string {
+	const fallback = theme.symbol("icon.agents");
+	const icon = (() => {
+		switch (role?.trim().toLowerCase()) {
+			case "scout":
+				return theme.symbol("icon.search");
+			case "sonic":
+				return theme.symbol("icon.fast");
+			case "librarian":
+				return theme.symbol("icon.extensionInstruction");
+			case "reviewer":
+				return theme.symbol("icon.advisor");
+			case "security-reviewer":
+				return theme.symbol("cmd.shield") || theme.symbol("icon.extensionRule");
+			case "designer":
+				return theme.symbol("cmd.pencil") || theme.symbol("icon.extensionPrompt");
+			default:
+				return fallback;
+		}
+	})();
+	return theme.fg("accent", icon);
+}
 
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of running-agent rows. Each row keeps the task id and role, then
- * surfaces the resolved model, cumulative uncached input/output tokens, and live
- * elapsed time before the optional description.
+ * a bounded set of running-agent rows. Each row leads with a semantic role icon,
+ * keeps its description and resolved model on the left, and pins cumulative
+ * uncached input/output tokens plus live elapsed time to the right edge.
  * Layout mirrors the Todos HUD exactly: unindented header, then
  * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Only detached background spawns are listed: a sync task call blocks the
@@ -520,20 +541,32 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = running.length - visible.length;
+	const treePrefixWidth = Math.max(visibleWidth(theme.tree.branch), visibleWidth(theme.tree.last)) + 1;
+	const contentWidth = Math.max(1, columns - treePrefixWidth - 1);
 	const rows = renderTreeList(
 		{
 			items: visible,
 			expanded: true,
 			renderItem: session => {
-				const displayId = formatTaskId(session.id);
 				const progress = session.progress;
 				const role = session.agent ?? progress?.agent;
-				const badge = agentTypeBadge(role, theme);
-				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				let metadata = "";
+				const icon = subagentRoleIcon(role);
+				const leftBase = `${dot} ${icon}`;
+				const description = session.description?.trim() || progress?.description?.trim();
+				const distinctDescription =
+					description && !labelEchoesHandle(session.id, description) ? description : undefined;
+				const taskPreview = progress?.task?.trim();
+				const displayText =
+					distinctDescription ??
+					(taskPreview && !labelEchoesHandle(session.id, taskPreview) ? taskPreview : formatTaskId(session.id));
+				let left = leftBase;
+				const formatted = replaceTabs(displayText).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+				left += ` ${theme.fg(distinctDescription ? "accent" : "muted", formatted)}`;
 				if (progress?.resolvedModel) {
-					metadata += `${theme.sep.dot}${formatResolvedModelBadge(progress.resolvedModel)}`;
+					left += `${theme.sep.dot}${formatResolvedModelBadge(progress.resolvedModel)}`;
 				}
+
+				const rightParts: string[] = [];
 				if (progress) {
 					const inputTokens =
 						typeof progress.inputTokens === "number" && Number.isFinite(progress.inputTokens)
@@ -543,8 +576,10 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 						typeof progress.outputTokens === "number" && Number.isFinite(progress.outputTokens)
 							? Math.max(0, progress.outputTokens)
 							: 0;
-					metadata += `${theme.sep.dot}${theme.fg("dim", `${formatNumber(inputTokens)} uncached in`)}`;
-					metadata += `${theme.sep.dot}${theme.fg("dim", `${formatNumber(outputTokens)} out`)}`;
+					rightParts.push(
+						theme.fg("dim", `${formatNumber(inputTokens)} tot`),
+						theme.fg("dim", `${formatNumber(outputTokens)} out`),
+					);
 				}
 				const reportedDuration =
 					typeof progress?.durationMs === "number" && Number.isFinite(progress.durationMs)
@@ -552,32 +587,22 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 						: 0;
 				const observedStart = progress ? session.lastUpdate - reportedDuration : session.lastUpdate;
 				const elapsed = Math.max(reportedDuration, nowMs - observedStart, 0);
-				metadata += `${theme.sep.dot}${theme.fg("dim", formatMetricDuration(elapsed))}`;
+				rightParts.push(theme.fg("dim", formatMetricDuration(elapsed)));
 
-				const description = session.description?.trim() || progress?.description?.trim();
-				const distinctDescription =
-					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				const budget = Math.max(
-					0,
-					columns -
-						visibleWidth(Bun.stripANSI(line)) -
-						visibleWidth(Bun.stripANSI(metadata)) -
-						SUBAGENT_HUD_ROW_CHROME_WIDTH,
-				);
-				if (distinctDescription && budget > 0) {
-					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-				} else if (!distinctDescription) {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview) && budget > 0) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
-					}
+				while (
+					rightParts.length > 1 &&
+					visibleWidth(Bun.stripANSI(rightParts.join(theme.sep.dot))) + visibleWidth(Bun.stripANSI(leftBase)) + 1 >
+						contentWidth
+				) {
+					rightParts.shift();
 				}
-				line += metadata;
-				return truncateToWidth(line, Math.max(1, columns - (SUBAGENT_HUD_ROW_CHROME_WIDTH - 2)));
+				const right = rightParts.join(theme.sep.dot);
+				const rightWidth = visibleWidth(Bun.stripANSI(right));
+				if (rightWidth >= contentWidth) return truncateToWidth(right, contentWidth);
+				const leftBudget = Math.max(0, contentWidth - rightWidth - 1);
+				const fittedLeft = truncateToWidth(left, leftBudget);
+				const padding = Math.max(1, contentWidth - visibleWidth(Bun.stripANSI(fittedLeft)) - rightWidth);
+				return `${fittedLeft}${" ".repeat(padding)}${right}`;
 			},
 		},
 		theme,
