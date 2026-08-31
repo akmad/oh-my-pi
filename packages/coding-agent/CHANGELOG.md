@@ -56,7 +56,7 @@
 - Commit summaries written in Vietnamese, Korean, and other accented scripts are no longer rejected for exceeding the length limit, and keep their accents as typed.
 ### Changed
 
-- Expanded the detached-subagent HUD with each worker's resolved model, cumulative uncached input and output tokens, and a live elapsed-time counter.
+- Expanded the detached-subagent HUD with icon-led task descriptions and resolved models, plus right-aligned cumulative uncached input/output tokens and live elapsed time.
 
 ## [18.1.10] - 2026-09-04
 
