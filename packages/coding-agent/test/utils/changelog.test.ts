@@ -234,8 +234,15 @@ describe("parseChangelog", () => {
 		const latest = entries[0];
 		const previous = entries[1];
 
-		expect(`${latest?.major}.${latest?.minor}.${latest?.patch}`).toBe(VERSION);
-		expect(latest?.content).toContain(`## [${VERSION}]`);
+		// Compare the BASE version, not the whole string. On this branch VERSION carries
+		// semver build metadata — `18.0.11+wes` — marking a custom build of the upstream
+		// release, while CHANGELOG.md's heading is the upstream release itself. The
+		// numeric triple is what the two have in common, and it is what this test is
+		// actually about: that the changelog's newest entry describes the running version.
+		// Asserting on the full string made the marker fail a test it has no bearing on.
+		const baseVersion = VERSION.split("+")[0];
+		expect(`${latest?.major}.${latest?.minor}.${latest?.patch}`).toBe(baseVersion);
+		expect(latest?.content).toContain(`## [${baseVersion}]`);
 		expect(previous).toBeDefined();
 
 		const previousVersion = `${previous?.major}.${previous?.minor}.${previous?.patch}`;
