@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded the detached-subagent HUD with icon-led task descriptions and resolved models, plus right-aligned cumulative uncached input/output tokens and live elapsed time.
+
+### Fixed
+
+- Sanitized detached-subagent HUD descriptions and task previews before terminal rendering.
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed
@@ -54,9 +62,6 @@
 - Report oversized selected lines that cannot fit after read context, with a working raw recovery selector instead of a looping continuation hint ([#10775](https://github.com/can1357/oh-my-pi/issues/10775)).
 - Fixed WorkPool child sessions crashing during startup while constructing their incremental `yield` tool schema.
 - Commit summaries written in Vietnamese, Korean, and other accented scripts are no longer rejected for exceeding the length limit, and keep their accents as typed.
-### Changed
-
-- Expanded the detached-subagent HUD with icon-led task descriptions and resolved models, plus right-aligned cumulative uncached input/output tokens and live elapsed time.
 
 ## [18.1.10] - 2026-09-04
 

@@ -110,6 +110,22 @@ describe("subagent HUD lines", () => {
 		expect(out).not.toContain("SchemaMigrator");
 	});
 
+	it("strips terminal control sequences from descriptions", () => {
+		const raw = renderSubagentHudLines(
+			[
+				makeSession({
+					id: "Unsafe",
+					description: "Inspect \x1b]8;;https://evil.invalid\x07linked\x1b]8;;\x07 \x07alert",
+				}),
+			],
+			120,
+		).join("\n");
+
+		expect(Bun.stripANSI(raw)).toContain("Inspect linked alert");
+		expect(raw).not.toContain("evil.invalid");
+		expect(raw).not.toContain("\x07");
+	});
+
 	it("keeps description/model before right-aligned uncached token and duration metrics", () => {
 		const nowMs = Date.parse("2026-08-25T12:00:00Z");
 		const columns = 120;

@@ -560,7 +560,7 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 					distinctDescription ??
 					(taskPreview && !labelEchoesHandle(session.id, taskPreview) ? taskPreview : formatTaskId(session.id));
 				let left = leftBase;
-				const formatted = replaceTabs(displayText).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+				const formatted = replaceTabs(sanitizeText(displayText)).replace(/\s*[\r\n]+\s*/g, " ↵ ");
 				left += ` ${theme.fg(distinctDescription ? "accent" : "muted", formatted)}`;
 				if (progress?.resolvedModel) {
 					left += `${theme.sep.dot}${formatResolvedModelBadge(progress.resolvedModel)}`;
