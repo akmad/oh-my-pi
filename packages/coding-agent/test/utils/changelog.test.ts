@@ -238,13 +238,11 @@ describe("parseChangelog", () => {
 		// section (scripts/release.ts skips empty [Unreleased]), so the newest
 		// section may lag VERSION — but it must never be ahead of it.
 		//
-		// Strip semver build metadata before the comparison. On this branch VERSION is
-		// `18.1.10+wes`, a custom build of the upstream release, and
-		// parseChangelogVersion's regex is anchored to a bare numeric triple — so the
-		// marker makes it return undefined and getNewEntries returns [] for every
-		// input. The assertion would then pass no matter what the changelog said,
-		// which is worse than failing. The numeric triple is what the build and the
-		// release genuinely share; same rule as base_semver() in fleet-ops' checker.
+		// Strip semver build metadata before the comparison. Custom builds append
+		// `+wes`, while parseChangelogVersion's regex accepts only a bare numeric
+		// triple. Passing the marked version would make getNewEntries return [] for
+		// every input and let this assertion pass regardless of changelog content.
+		// The numeric triple is the upstream release shared by both builds.
 		expect(latest).toBeDefined();
 		const latestVersion = `${latest?.major}.${latest?.minor}.${latest?.patch}`;
 		expect(latest?.content).toContain(`## [${latestVersion}]`);
