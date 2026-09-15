@@ -126,17 +126,14 @@ import { STTController, type SttState } from "../stt";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
-import { agentTypeBadge, formatTaskId } from "../task/render";
+import { formatTaskId } from "../task/render";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
 import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import {
-	FEED_MODEL_BADGE_WIDTH,
-	formatFeedModelBadge,
 	formatMoreItems,
-	isFeedModelBadgeEnabled,
 	replaceTabs,
 	shortenEmbeddedPaths,
 	shortenPath,
@@ -680,7 +677,6 @@ export function renderSubagentHudLines(
 	const layout = layoutPinnedHud(running.length, expanded);
 	const dot = theme.styledSymbol("status.done", "accent");
 	const items = running.slice(0, layout.itemRows);
-	const showModelBadge = isFeedModelBadgeEnabled();
 	const outerIndent = " ";
 	const rows = renderTreeList(
 		{
