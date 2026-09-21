@@ -137,7 +137,7 @@ import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
-import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
+import { formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
@@ -668,9 +668,40 @@ const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
  *  before it auto-clears, mirroring the todo HUD's auto-clear timer. */
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
-/** Active subagent sessions the anchored HUD jump-lists, sync or detached. Slots follow registry order. */
+/**
+ * Active detached subagent sessions the anchored HUD jump-lists. A synchronous task
+ * call already renders progress in its inline tool block, and an eval `agent()` spawn
+ * renders in its own cell tree, so listing either here duplicates work.
+ *
+ * Both the renderer and click map use this one predicate. Filtering elsewhere risks
+ * routing a clicked row to the wrong session.
+ */
 function isHudSubagent(session: ObservableSession): boolean {
-	return session.kind === "subagent" && session.status === "active";
+	return session.kind === "subagent" && session.status === "active" && session.detached === true;
+}
+
+/** Compact visual identity for a detached subagent's semantic role. */
+function subagentRoleIcon(role: string | undefined): string {
+	const fallback = theme.symbol("icon.agents");
+	const icon = (() => {
+		switch (role?.trim().toLowerCase()) {
+			case "scout":
+				return theme.symbol("icon.search");
+			case "sonic":
+				return theme.symbol("icon.fast");
+			case "librarian":
+				return theme.symbol("icon.extensionInstruction");
+			case "reviewer":
+				return theme.symbol("icon.advisor");
+			case "security-reviewer":
+				return theme.symbol("cmd.shield") || theme.symbol("icon.extensionRule");
+			case "designer":
+				return theme.symbol("cmd.pencil") || theme.symbol("icon.extensionPrompt");
+			default:
+				return fallback;
+		}
+	})();
+	return theme.fg("accent", icon);
 }
 
 /**
@@ -752,6 +783,14 @@ export class SubagentHudComponent implements Component {
 	}
 }
 
+/** Refresh live elapsed time while detached HUD rows remain active. */
+const SUBAGENT_HUD_TICK_MS = 1000;
+
+/** Columns a HUD row's description keeps before the optional model badge gets any. */
+const SUBAGENT_HUD_MIN_TEXT_WIDTH = 12;
+
+/** Text padding reserved by SubagentHudComponent's mount. Full-width rows must exclude it. */
+const SUBAGENT_HUD_TEXT_PADDING = getPaddingX(1) * 2;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
 /** Item rows a collapsed jump list shows before the expander. */
@@ -792,70 +831,95 @@ export function layoutPinnedHud(runningTotal: number, expanded: boolean): Pinned
 }
 
 /**
- * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of running-agent rows in the same `Id ⟨role⟩: description` shape
- * the inline task rows use (muted task preview when no description was given).
- * Layout mirrors the Todos HUD exactly: unindented header, then
- * `renderTreeList` rows (dim connectors) shifted right by one space.
- * Every active subagent is listed — detached background spawns and sync task
- * calls alike — so the pinned block doubles as a click jump list.
+ * Build the anchored subagent HUD block. Rows show a semantic role icon, useful
+ * description or task, the resolved model when `task.showResolvedModelBadge` is on,
+ * cumulative uncached input/output tokens, and live elapsed time. Upstream's expansion and click-map structure remains.
  * Returns an empty array when nothing is running so the container can clear.
  */
-export function renderSubagentHudLines(sessions: ObservableSession[], columns: number, expanded = false): string[] {
+export function renderSubagentHudLines(
+	sessions: ObservableSession[],
+	columns: number,
+	expanded = false,
+	nowMs = Date.now(),
+): string[] {
 	const running = sessions.filter(isHudSubagent);
 	if (running.length === 0) return [];
 	const layout = layoutPinnedHud(running.length, expanded);
 	const dot = theme.styledSymbol("status.done", "accent");
 	const items = running.slice(0, layout.itemRows);
-	const showModelBadge = isFeedModelBadgeEnabled();
 	const outerIndent = " ";
 	const rows = renderTreeList(
 		{
 			items,
 			expanded: true,
 			renderItem: (session, context) => {
-				const rowWidth = Math.max(0, columns - visibleWidth(outerIndent) - (context.prefixWidth ?? 0));
-				const role = session.agent ?? session.progress?.agent;
-				const displayId = truncateToWidth(
-					formatTaskId(session.id),
-					Math.max(0, rowWidth - visibleWidth(`${dot} `)),
+				const rowWidth = Math.max(
+					0,
+					columns - SUBAGENT_HUD_TEXT_PADDING - visibleWidth(outerIndent) - (context.prefixWidth ?? 0),
 				);
-				const badge = truncateToWidth(
-					agentTypeBadge(role, theme),
-					Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}`)),
-				);
-				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}`));
-				const modelBadge = showModelBadge
-					? formatFeedModelBadge(
-							session.progress?.resolvedModelIdentity ?? session.progress?.resolvedModel,
-							session.progress?.resolvedThinkingLevel,
-							session.progress?.advisor,
-							theme,
-							Math.min(FEED_MODEL_BADGE_WIDTH, Math.max(0, titleBudget - 1)),
-						)
-					: "";
-				const modelLead = modelBadge ? `${modelBadge} ` : "";
-				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
+				const progress = session.progress;
+				const role = session.agent ?? progress?.agent;
+				const leftBase = `${dot} ${subagentRoleIcon(role)}`;
+				const description = session.description?.trim() || progress?.description?.trim();
 				const distinctDescription =
 					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				if (distinctDescription) {
-					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
-					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-					if (budget > 0) {
-						line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-					}
-				} else {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						const budget = Math.min(TRUNCATE_LENGTHS.SHORT, Math.max(0, rowWidth - visibleWidth(line) - 1));
-						if (budget > 0) line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
-					}
+				const taskPreview = progress?.task?.trim();
+				const displayText =
+					distinctDescription ??
+					(taskPreview && !labelEchoesHandle(session.id, taskPreview) ? taskPreview : formatTaskId(session.id));
+
+				const rightParts: string[] = [];
+				if (progress) {
+					const inputTokens = Number.isFinite(progress.inputTokens) ? Math.max(0, progress.inputTokens ?? 0) : 0;
+					const outputTokens = Number.isFinite(progress.outputTokens)
+						? Math.max(0, progress.outputTokens ?? 0)
+						: 0;
+					rightParts.push(
+						theme.fg("dim", `${formatNumber(inputTokens)} tot`),
+						theme.fg("dim", `${formatNumber(outputTokens)} out`),
+					);
 				}
-				return truncateToWidth(line, rowWidth, "");
+				const reportedDuration = Number.isFinite(progress?.durationMs) ? Math.max(0, progress?.durationMs ?? 0) : 0;
+				const elapsed = Math.max(reportedDuration, nowMs - (session.lastUpdate - reportedDuration), 0);
+				rightParts.push(theme.fg("dim", formatDuration(elapsed)));
+				while (
+					rightParts.length > 1 &&
+					visibleWidth(Bun.stripANSI(rightParts.join(theme.sep.dot))) + visibleWidth(Bun.stripANSI(leftBase)) + 1 >
+						rowWidth
+				) {
+					rightParts.shift();
+				}
+				const right = rightParts.join(theme.sep.dot);
+				const rightWidth = visibleWidth(Bun.stripANSI(right));
+				if (rightWidth >= rowWidth) return truncateToWidth(right, rowWidth);
+				// Left side: role icon, description, then (when task.showResolvedModelBadge is on)
+				// the model badge. The description identifies the row (no id is shown), so it keeps
+				// up to SUBAGENT_HUD_MIN_TEXT_WIDTH columns; the badge gets the rest, and its width is
+				// reserved before the description is fitted so a long description cannot push it off.
+				const leftBudget = Math.max(0, rowWidth - rightWidth - 1);
+				const leftBaseWidth = visibleWidth(Bun.stripANSI(leftBase));
+				const separatorWidth = visibleWidth(Bun.stripANSI(theme.sep.dot));
+				const formatted = replaceTabs(sanitizeText(displayText)).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+				const textFloor = Math.min(visibleWidth(formatted), SUBAGENT_HUD_MIN_TEXT_WIDTH);
+				const modelBadge = isFeedModelBadgeEnabled()
+					? formatFeedModelBadge(
+							progress?.resolvedModelIdentity ?? progress?.resolvedModel,
+							progress?.resolvedThinkingLevel,
+							progress?.advisor,
+							theme,
+							Math.min(
+								FEED_MODEL_BADGE_WIDTH,
+								Math.max(0, leftBudget - leftBaseWidth - 1 - textFloor - separatorWidth),
+							),
+						)
+					: "";
+				const modelSuffix = modelBadge ? `${theme.sep.dot}${modelBadge}` : "";
+				const textBudget = Math.max(0, leftBudget - leftBaseWidth - 1 - visibleWidth(Bun.stripANSI(modelSuffix)));
+				const text = truncateToWidth(formatted, textBudget);
+				const left = `${leftBase} ${theme.fg(distinctDescription ? "accent" : "muted", text)}${modelSuffix}`;
+				const fittedLeft = truncateToWidth(left, leftBudget);
+				const padding = Math.max(1, rowWidth - visibleWidth(Bun.stripANSI(fittedLeft)) - rightWidth);
+				return `${fittedLeft}${" ".repeat(padding)}${right}`;
 			},
 		},
 		theme,
@@ -1283,6 +1347,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Mirror of `tui.mouse`, read by the TUI's per-frame inline mouse tracking probe. */
 	#mouseCapture = false;
 	#observerUiSyncTimer?: NodeJS.Timeout;
+	#subagentHudTickTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
 	#runningSubagentCount = 0;
 	#agentRegistryUnsubscribe?: () => void;
@@ -3528,6 +3593,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
 		this.#renderTodoList();
 		this.#renderSubagentList();
+		this.#syncSubagentHudTickTimer();
 		this.ui.requestRender();
 	}
 
@@ -3537,6 +3603,28 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerUiSyncTimer = undefined;
 		}
 		this.#observerUiSyncNeedsTodoReconcile = false;
+	}
+
+	#syncSubagentHudTickTimer(): void {
+		const hasRunningDetachedSubagent = this.#observerRegistry.getSessions().some(isHudSubagent);
+		if (!hasRunningDetachedSubagent) {
+			this.#cancelSubagentHudTickTimer();
+			return;
+		}
+		if (this.#subagentHudTickTimer) return;
+		this.#subagentHudTickTimer = setTimeout(() => {
+			this.#subagentHudTickTimer = undefined;
+			this.#renderSubagentList();
+			this.ui.requestRender();
+			this.#syncSubagentHudTickTimer();
+		}, SUBAGENT_HUD_TICK_MS);
+		this.#subagentHudTickTimer.unref?.();
+	}
+
+	#cancelSubagentHudTickTimer(): void {
+		if (!this.#subagentHudTickTimer) return;
+		clearTimeout(this.#subagentHudTickTimer);
+		this.#subagentHudTickTimer = undefined;
 	}
 
 	#renderTodoList(): void {
@@ -6007,6 +6095,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#downloadActivityHud.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
+		this.#cancelSubagentHudTickTimer();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
 			this.#sttController.dispose();
