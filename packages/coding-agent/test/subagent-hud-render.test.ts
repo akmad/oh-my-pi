@@ -1,12 +1,12 @@
 /**
  * Contract: the anchored subagent HUD (rendered above the editor, next to the
- * Todos block) lists every running subagent — detached background spawns and
- * sync task calls alike — as numbered `N Id: description` jump-list rows and
- * yields no output once nothing qualifies, so the block self-clears.
+ * Todos block) lists exactly running detached subagents with a semantic role
+ * icon, useful description or task, resolved model, and live metrics. Sync
+ * task and eval-agent spawns render progress inline instead.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
@@ -90,8 +90,8 @@ function makeProgressPayload(
 	};
 }
 
-function render(sessions: ObservableSession[], columns = 120): string {
-	return Bun.stripANSI(renderSubagentHudLines(sessions, columns).join("\n"));
+function render(sessions: ObservableSession[], columns = 120, nowMs = Date.now(), expanded = true): string {
+	return Bun.stripANSI(renderSubagentHudLines(sessions, columns, expanded, nowMs).join("\n"));
 }
 
 describe("subagent HUD lines", () => {
@@ -99,158 +99,72 @@ describe("subagent HUD lines", () => {
 		await initTheme();
 	});
 
-	describe("model badges", () => {
-		beforeEach(async () => {
-			resetSettingsForTest();
-			await Settings.init({ inMemory: true, overrides: { "task.showResolvedModelBadge": true } });
-		});
-
-		afterEach(() => {
-			resetSettingsForTest();
-		});
-
-		it("places thinking, model and optional advisor before the detached agent name", () => {
-			const session = makeSession({
-				id: "BadgeWorker",
-				agent: "scout",
-				description: "Inspect rendering",
-				progress: makeProgress({
-					id: "BadgeWorker",
-					resolvedModel: "openai/gpt-5:high",
-					resolvedModelIdentity: "openai/gpt-5",
-					resolvedThinkingLevel: ThinkingLevel.High,
-					advisor: true,
-				}),
-			});
-			const out = render([session]);
-			expect(out).toContain(`${theme.thinking.high.split(" ")[0]} openai/gpt-5 ${theme.icon.advisor} BadgeWorker`);
-			expect(out).toContain(`BadgeWorker ${theme.format.bracketLeft}scout${theme.format.bracketRight}`);
-			expect(out).toContain(": Inspect rendering");
-
-			session.progress = makeProgress({
-				id: "BadgeWorker",
-				resolvedModel: "openai/gpt-5:high",
-				resolvedModelIdentity: "openai/gpt-5",
-				resolvedThinkingLevel: ThinkingLevel.High,
-				advisor: false,
-			});
-			const withoutAdvisor = render([session]);
-			expect(withoutAdvisor).toContain("openai/gpt-5 BadgeWorker");
-			expect(withoutAdvisor).not.toContain(theme.icon.advisor);
-		});
-
-		it("keeps metadata hidden when disabled or settings have not initialized", () => {
-			const sessions = [
-				makeSession({
-					id: "HiddenBadge",
-					description: "Inspect rendering",
-					progress: makeProgress({
-						id: "HiddenBadge",
-						resolvedModel: "openai/gpt-5:high",
-						resolvedModelIdentity: "openai/gpt-5",
-						resolvedThinkingLevel: ThinkingLevel.High,
-						advisor: true,
-					}),
-				}),
-			];
-			Settings.instance.override("task.showResolvedModelBadge", false);
-			const disabled = render(sessions);
-			expect(disabled).toContain(`${theme.status.done} HiddenBadge: Inspect rendering`);
-			expect(disabled).not.toContain("openai/gpt-5");
-			expect(disabled).not.toContain(theme.icon.advisor);
-
-			resetSettingsForTest();
-			expect(render(sessions)).toBe(disabled);
-		});
-
-		it("preserves model identity and the agent name while fitting descriptions and task previews", () => {
-			const metadata = {
-				resolvedModel: `provider/${"shared-prefix-".repeat(8)}variant-z:high`,
-				resolvedModelIdentity: `provider/${"shared-prefix-".repeat(8)}variant-z`,
-				resolvedThinkingLevel: ThinkingLevel.High,
-				advisor: true,
-			};
-			const sessions = [
-				makeSession({
-					id: "Description",
-					description: "Inspect rendering ".repeat(20),
-					progress: makeProgress({ id: "Description", ...metadata }),
-				}),
-				makeSession({
-					id: "TaskPreview",
-					progress: makeProgress({ id: "TaskPreview", task: "Inspect rendering ".repeat(20), ...metadata }),
-				}),
-			];
-			const lines = render(sessions, 60).split("\n");
-			for (const id of ["Description", "TaskPreview"]) {
-				const row = lines.find(line => line.includes(id))!;
-				expect(row).toContain(`variant-z ${theme.icon.advisor} ${id}`);
-				expect(row.indexOf("variant-z")).toBeLessThan(row.indexOf(id));
-				expect(row).not.toContain(":high");
-			}
-			for (const line of lines) {
-				expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
-			}
-		});
-
-		it("reserves custom tree prefixes, outer indent and roles before optional details", () => {
-			const priorTree = Object.getOwnPropertyDescriptor(theme, "tree");
-			try {
-				Object.defineProperty(theme, "tree", {
-					configurable: true,
-					value: { ...theme.tree, branch: "界├", last: "界界└", vertical: "界界│" },
-				});
-				const sessions = [
-					makeSession({
-						id: `LongWorker${"界".repeat(30)}`,
-						agent: `custom-role-${"extended-".repeat(10)}`,
-						description: "Every available column ".repeat(10),
-						progress: makeProgress({ id: "LongWorker", resolvedModelIdentity: "provider/model", advisor: true }),
-					}),
-					makeSession({ id: "ShortWorker", agent: "scout", description: "Every available column ".repeat(10) }),
-				];
-				for (const enabled of [true, false]) {
-					Settings.instance.override("task.showResolvedModelBadge", enabled);
-					for (const width of [40, 120, 40]) {
-						const rows = render(sessions, width).split("\n");
-						expect(rows.find(row => row.includes("LongWorker"))).toStartWith(" 界├ ");
-						expect(rows.find(row => row.includes("ShortWorker"))).toStartWith(" 界界└ ");
-						for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(width);
-						expect(rows.find(row => row.includes("LongWorker"))).toContain("LongWorker");
-						expect(rows.find(row => row.includes("ShortWorker"))).toContain(
-							`${theme.format.bracketLeft}scout${theme.format.bracketRight}`,
-						);
-					}
-				}
-			} finally {
-				if (priorTree) Object.defineProperty(theme, "tree", priorTree);
-				else Reflect.deleteProperty(theme, "tree");
-			}
-		});
-
-		it("preserves a legacy selector without inventing a thinking glyph", () => {
-			const out = render([
-				makeSession({
-					id: "LegacyWorker",
-					progress: makeProgress({ id: "LegacyWorker", resolvedModel: "custom/model:high" }),
-				}),
-			]);
-			expect(out).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
-			expect(out).not.toContain(theme.thinking.high.split(" ")[0]);
-		});
-	});
-
-	it("renders running subagents as Id: description under a Subagents header", () => {
+	it("renders detached subagents with descriptions under a Subagents header", () => {
 		const out = render([
 			makeSession({ id: "AuthLoader", description: "Refactoring the auth flow" }),
 			makeSession({ id: "SchemaMigrator", description: "Migrating the users table" }),
 		]);
 		expect(out).toContain("Subagents");
-		expect(out).toContain("AuthLoader: Refactoring the auth flow");
-		expect(out).toContain("SchemaMigrator: Migrating the users table");
+		expect(out).toContain("Refactoring the auth flow");
+		expect(out).toContain("Migrating the users table");
+		expect(out).not.toContain("AuthLoader");
+		expect(out).not.toContain("SchemaMigrator");
 	});
 
-	it("shows a non-default role badge and hides descriptions that only echo the id", () => {
+	it("sanitizes terminal controls before rendering descriptions", () => {
+		const raw = renderSubagentHudLines(
+			[
+				makeSession({
+					id: "Unsafe",
+					description: "Inspect \x1b]8;;https://evil.invalid\x07linked\x1b]8;;\x07 \x07alert",
+				}),
+			],
+			120,
+		).join("\n");
+		expect(Bun.stripANSI(raw)).toContain("Inspect linked alert");
+		expect(raw).not.toContain("evil.invalid");
+		expect(raw).not.toContain("\x07");
+	});
+
+	it("pins model, uncached token, and elapsed metrics after the description", () => {
+		const nowMs = Date.parse("2026-08-25T12:00:00Z");
+		const columns = 120;
+		const out = render(
+			[
+				makeSession({
+					id: "Compiler",
+					agent: "sonic",
+					description: "Build the release binary",
+					lastUpdate: nowMs,
+					progress: makeProgress({
+						id: "Compiler",
+						agent: "sonic",
+						resolvedModel: "openai-codex/gpt-5.6-sol:high",
+						inputTokens: 12_300,
+						outputTokens: 742,
+						durationMs: 65_000,
+					}),
+				}),
+			],
+			columns,
+			nowMs + 5_000,
+		);
+		const row = out.split("\n").find(line => line.includes("Build the release binary"));
+		expect(row).toBeDefined();
+		if (!row) return;
+		expect(row).not.toContain("Compiler");
+		expect(row).toContain(theme.symbol("icon.fast"));
+		expect(row).toContain("gpt-5.6-sol");
+		expect(row).toContain("12K tot");
+		expect(row).toContain("742 out");
+		expect(row).toContain("1m10s");
+		expect(row.indexOf("Build the release binary")).toBeLessThan(row.indexOf("gpt-5.6-sol"));
+		expect(row.indexOf("gpt-5.6-sol")).toBeLessThan(row.indexOf("12K tot"));
+		expect(row.indexOf("742 out")).toBeLessThan(row.indexOf("1m10s"));
+		expect(Bun.stringWidth(row)).toBe(columns - 2);
+	});
+
+	it("uses semantic role icons and omits internal ids when descriptions are useful", () => {
 		const withRole = render([
 			makeSession({
 				id: "AuthLoader",
@@ -258,9 +172,10 @@ describe("subagent HUD lines", () => {
 				description: "Refactor the auth flow",
 			}),
 		]);
-		expect(withRole).toContain("AuthLoader");
-		expect(withRole).toMatch(/AuthLoader.*scout/);
 		expect(withRole).toContain("Refactor the auth flow");
+		expect(withRole).toContain(theme.symbol("icon.search"));
+		expect(withRole).not.toContain("AuthLoader");
+		expect(withRole).not.toContain("scout");
 
 		const echoed = render([
 			makeSession({
@@ -269,9 +184,9 @@ describe("subagent HUD lines", () => {
 				description: "AuthLoader",
 			}),
 		]);
+		expect(echoed).toContain(theme.symbol("icon.search"));
 		expect(echoed).toContain("AuthLoader");
-		expect(echoed).toMatch(/AuthLoader.*scout/);
-		expect(echoed).not.toContain("AuthLoader: AuthLoader");
+		expect(echoed).not.toContain("scout");
 
 		const collision = render([
 			makeSession({
@@ -280,9 +195,8 @@ describe("subagent HUD lines", () => {
 				description: "AuthLoader",
 			}),
 		]);
+		expect(collision).toContain(theme.symbol("icon.search"));
 		expect(collision).toContain("AuthLoader-3");
-		expect(collision).toMatch(/AuthLoader-3.*scout/);
-		expect(collision).not.toContain("AuthLoader-3: AuthLoader");
 
 		const mixedCase = render([
 			makeSession({
@@ -291,14 +205,15 @@ describe("subagent HUD lines", () => {
 				description: "authloader",
 			}),
 		]);
+		expect(mixedCase).toContain(theme.symbol("icon.search"));
 		expect(mixedCase).toContain("AuthLoader-3");
-		expect(mixedCase).not.toContain("AuthLoader-3: authloader");
 
 		const defaultWorker = render([
 			makeSession({ id: "SchemaMigrator", agent: "task", description: "Migrate users" }),
 		]);
-		expect(defaultWorker).toContain("SchemaMigrator: Migrate users");
-		expect(defaultWorker).not.toMatch(/SchemaMigrator.*task/);
+		expect(defaultWorker).toContain("Migrate users");
+		expect(defaultWorker).not.toContain("SchemaMigrator");
+		expect(defaultWorker).not.toMatch(/(?:^| )task(?: |$)/);
 	});
 
 	it("only shows active subagents and clears once everything finished", () => {
@@ -310,7 +225,8 @@ describe("subagent HUD lines", () => {
 		expect(renderSubagentHudLines(sessions, 120)).toEqual([]);
 
 		const out = render([...sessions, makeSession({ id: "StillRunning", description: "live work" })]);
-		expect(out).toContain("StillRunning: live work");
+		expect(out).toContain("live work");
+		expect(out).not.toContain("StillRunning");
 		expect(out).not.toContain("Done-");
 		expect(out).not.toContain("Main Session");
 	});
@@ -319,12 +235,14 @@ describe("subagent HUD lines", () => {
 		const fromProgressDesc = render([
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", description: "From progress" }) }),
 		]);
-		expect(fromProgressDesc).toContain("Worker: From progress");
+		expect(fromProgressDesc).toContain("From progress");
+		expect(fromProgressDesc).not.toContain("Worker");
 
 		const fromTask = render([
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", task: "Investigate flaky CI on macOS" }) }),
 		]);
-		expect(fromTask).toContain("Worker Investigate flaky CI on macOS");
+		expect(fromTask).toContain("Investigate flaky CI on macOS");
+		expect(fromTask).not.toContain("Worker");
 
 		const multiLineTask = render([
 			makeSession({
@@ -337,8 +255,9 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expect(multiLineTask).toContain("ReviewShell");
+		expect(multiLineTask).toContain(theme.symbol("icon.search"));
 		expect(multiLineTask).toContain("Complete assignment thoroughly: ↵ # Tar");
+		expect(multiLineTask).not.toContain("ReviewShell");
 		expect(multiLineTask).not.toContain("\n# Target");
 
 		const multiLineDesc = render([
@@ -348,31 +267,21 @@ describe("subagent HUD lines", () => {
 				description: "First line\n\nSecond line",
 			}),
 		]);
-		expect(multiLineDesc).toContain("ReviewShell");
 		expect(multiLineDesc).toContain("First line ↵ Second line");
+		expect(multiLineDesc).not.toContain("ReviewShell");
 		expect(multiLineDesc).not.toContain("\nSecond line");
 	});
-	it("lists sync and detached spawns alike", () => {
-		// Sync task spawn (parent blocked on the call) and eval `agent()` spawn
-		// (no detached flag at all) join the pinned jump list.
+	it("hides sync task calls and eval agent spawns", () => {
 		const sessions = [
 			makeSession({ id: "SyncSpawn", description: "inline task work", detached: false }),
 			makeSession({ id: "EvalSpawn", description: "eval cell work", detached: undefined }),
-			makeSession({ id: "BackgroundSpawn", description: "detached work" }),
 		];
-		const out = render(sessions);
-		expect(out).toContain("BackgroundSpawn: detached work");
-		expect(out).toContain("SyncSpawn: inline task work");
-		expect(out).toContain("EvalSpawn: eval cell work");
-		const hud = new SubagentHudComponent(renderSubagentHudLines(sessions, 120), [
-			"SyncSpawn",
-			"EvalSpawn",
-			"BackgroundSpawn",
-		]);
-		hud.render(120);
-		expect(hud.getClickAgentAtRow(2)).toBe("SyncSpawn");
-		expect(hud.getClickAgentAtRow(3)).toBe("EvalSpawn");
-		expect(hud.getClickAgentAtRow(4)).toBe("BackgroundSpawn");
+		expect(renderSubagentHudLines(sessions, 120)).toEqual([]);
+		const out = render([...sessions, makeSession({ id: "BackgroundSpawn", description: "detached work" })]);
+		expect(out).toContain("detached work");
+		expect(out).not.toContain("BackgroundSpawn");
+		expect(out).not.toContain("SyncSpawn");
+		expect(out).not.toContain("EvalSpawn");
 	});
 	it("threads the detached flag from lifecycle and progress payloads", () => {
 		const eventBus = new EventBus();
@@ -384,14 +293,16 @@ describe("subagent HUD lines", () => {
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("FromProgress", 2, "background work", true));
 
 		const out = render(registry.getSessions());
-		expect(out).toContain("Detached: background work");
-		expect(out).toContain("FromProgress: background work");
-		expect(out).toContain("Inline: sync work");
+		expect(out).toContain("background work");
+		expect(out).not.toContain("Detached");
+		expect(out).not.toContain("FromProgress");
+		expect(out).not.toContain("Inline");
 	});
 
-	it("renders nested ids as a breadcrumb and truncates long descriptions to the viewport", () => {
+	it("truncates long descriptions without leaking internal ids", () => {
 		const out = render([makeSession({ id: "Anna.Bob", description: `start ${"x".repeat(300)} end` })], 60);
-		expect(out).toContain("Anna>Bob:");
+		expect(out).toContain("start");
+		expect(out).not.toContain("Anna>Bob");
 		expect(out).not.toContain("end");
 		for (const line of out.split("\n")) {
 			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
@@ -449,7 +360,7 @@ describe("subagent HUD lines", () => {
 		expect(activeIds()).toEqual(["SelectorSurfaces", "BlastRadius", "VariantsSurvey"]);
 	});
 
-	it("renders every live agent when expanded, with a collapse row", () => {
+	it("collapses to three rows and expands all rows", () => {
 		const active = Array.from({ length: 10 }, (_, index) =>
 			makeSession({
 				id: `Worker${index}`,
@@ -457,29 +368,17 @@ describe("subagent HUD lines", () => {
 			}),
 		);
 
-		const out = Bun.stripANSI(renderSubagentHudLines(active, 120, true).join("\n"));
+		const collapsed = render(active, 120, Date.now(), false);
+		for (let index = 0; index < 3; index++) expect(collapsed).toContain(`job ${index}`);
+		for (let index = 3; index < 10; index++) expect(collapsed).not.toContain(`job ${index}`);
+		expect(collapsed).toContain("7 more — expand");
 
-		for (const session of active) {
-			expect(out).toContain(`${session.id}: ${session.description}`);
+		const expanded = render(active, 120, Date.now(), true);
+		for (let index = 0; index < 10; index++) {
+			expect(expanded).toContain(`job ${index}`);
+			expect(expanded).not.toContain(`Worker${index}`);
 		}
-		expect(out).not.toContain("more running");
-		expect(out).toContain("show less");
-	});
-
-	it("collapses to a few rows with an expander by default", () => {
-		const active = Array.from({ length: 10 }, (_, index) =>
-			makeSession({
-				id: `Worker${index}`,
-				description: `job ${index}`,
-			}),
-		);
-
-		const out = render(active, 120);
-		expect(out).toContain("Worker0: job 0");
-		expect(out).toContain("Worker2: job 2");
-		expect(out).not.toContain("Worker3: job 3");
-		expect(out).toContain("7 more — expand");
-		expect(out).not.toContain("show less");
+		expect(expanded).toContain("show less");
 	});
 });
 
@@ -489,13 +388,11 @@ describe("SubagentHudComponent click rows", () => {
 	});
 
 	it("maps item rows to session ids and chrome rows nowhere", () => {
-		const lines = renderSubagentHudLines([makeSession({ id: "Alpha" }), makeSession({ id: "Beta" })], 120);
+		const lines = renderSubagentHudLines([makeSession({ id: "Alpha" }), makeSession({ id: "Beta" })], 120, true);
 		const hud = new SubagentHudComponent(lines, ["Alpha", "Beta"]);
 
 		const rendered = hud.render(120);
 		expect(rendered).toHaveLength(lines.length);
-		expect(Bun.stripANSI(rendered[2] ?? "")).toContain("Alpha");
-		expect(Bun.stripANSI(rendered[3] ?? "")).toContain("Beta");
 
 		expect(hud.getClickAgentAtRow(0)).toBeUndefined();
 		expect(hud.getClickAgentAtRow(1)).toBeUndefined();
@@ -609,31 +506,31 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		}
 
 		await Promise.resolve();
-		vi.runAllTimers();
+		vi.advanceTimersByTime(100);
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(hud).toContain("BurstAgent0: Burst job 0");
-		expect(hud).toContain("BurstAgent2: Burst job 2");
-		expect(hud).not.toContain("BurstAgent3: Burst job 3");
+		expect(hud).toContain("Burst job 0");
 		expect(hud).toContain("3 more — expand");
+		expect(hud).not.toContain("BurstAgent");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("applies the setting over a clicked expand override", async () => {
+	it("refreshes elapsed time while a detached subagent remains active", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
-		for (let index = 0; index < 5; index++) {
-			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle(`Override${index}`, index, `job ${index}`));
-		}
+		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("LongRunner", 0, "Wait for work", true));
 		await Promise.resolve();
-		const hudText = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		vi.advanceTimersByTime(100);
+		await Promise.resolve();
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("100ms");
 
-		mode.togglePinnedHudExpanded();
-		expect(hudText()).toContain("Override4");
-
-		mode.applyPinnedAgentsSetting();
-		expect(hudText()).not.toContain("Override4");
-		expect(hudText()).toContain("more — expand");
+		vi.advanceTimersByTime(1000);
+		await Promise.resolve();
+		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(hud).toContain("1.1s");
+		expect(requestRender).toHaveBeenCalledTimes(2);
 	});
 });

@@ -8,6 +8,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
@@ -692,14 +693,19 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		};
 		mockCreateAgentSession(fastSession as AgentSession);
 
+		let latestProgress: AgentProgress | undefined;
 		const result = await runSubprocess({
 			...baseOptions,
 			id: "subagent-context-tokens",
 			settings,
+			onProgress: progress => {
+				latestProgress = progress;
+			},
 		});
 
 		expect(result.aborted).toBe(false);
 		expect(result.contextTokens).toBe(12345);
+		expect(latestProgress).toMatchObject({ inputTokens: 100, outputTokens: 50 });
 		// contextWindow is only populated when the model registry resolves one;
 		// here we mock createAgentSession so it stays undefined. The async-task
 		// consumer's assignment is a straight copy, so undefined is acceptable.

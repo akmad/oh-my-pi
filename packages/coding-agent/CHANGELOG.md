@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded detached-subagent HUD rows with resolved model, cumulative uncached input/output tokens, and live elapsed time.
+
 ## [18.2.8] - 2026-09-21
 
 ### Added
