@@ -255,15 +255,15 @@ describe("inline click-to-focus geometry", () => {
 
 		// Collapsed by default: three rows plus the expander.
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(plainRows(term.getViewport()).some(row => row.includes("toggle job 3"))).toBe(false);
 
 		// Clicking the expander paints the slotted window with a collapse row.
 		await clickRow("more — expand");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("show less")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent4"))).toBe(true);
+		expect(plainRows(term.getViewport()).some(row => row.includes("toggle job 4"))).toBe(true);
 		// Clicking it again collapses back to a few rows.
 		await clickRow("show less");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(plainRows(term.getViewport()).some(row => row.includes("toggle job 3"))).toBe(false);
 	});
 });

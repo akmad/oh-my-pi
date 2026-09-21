@@ -748,6 +748,29 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
+	it("applies the setting over a clicked expand override", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.useFakeTimers();
+		for (let index = 0; index < 5; index++) {
+			eventBus.emit(
+				TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+				makeLifecycle(`Override${index}`, index, `override job ${index}`, true),
+			);
+		}
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		await Promise.resolve();
+		const hudText = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+
+		mode.togglePinnedHudExpanded();
+		expect(hudText()).toContain("override job 4");
+		expect(hudText()).not.toContain("Override4");
+
+		mode.applyPinnedAgentsSetting();
+		expect(hudText()).not.toContain("override job 4");
+		expect(hudText()).toContain("more — expand");
+	});
+
 	it("refreshes elapsed time while a detached subagent remains active", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
