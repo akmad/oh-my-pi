@@ -36,6 +36,9 @@
 ### Removed
 
 - Removed the web search provider picker from `omp setup`; set the `web` model role (or keep the free default chain) instead.
+### Changed
+
+- Expanded detached-subagent HUD rows with a semantic role icon, the resolved model (when `task.showResolvedModelBadge` is on), cumulative uncached input/output tokens, and live elapsed time.
 
 ## [18.4.2] - 2026-09-28
 
