@@ -269,7 +269,7 @@ describe("parseChangelog", () => {
 		expect(latest).toBeDefined();
 		const latestVersion = `${latest?.major}.${latest?.minor}.${latest?.patch}`;
 		expect(latest?.content).toContain(`## [${latestVersion}]`);
-		expect(getNewEntries(entries, VERSION)).toEqual([]);
+		expect(getNewEntries(entries, VERSION.split("+")[0])).toEqual([]);
 		expect(previous).toBeDefined();
 
 		const previousVersion = `${previous?.major}.${previous?.minor}.${previous?.patch}`;
